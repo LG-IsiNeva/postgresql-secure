@@ -1,0 +1,85 @@
+networks:
+  traefik_proxy:
+    external: true
+services:
+  cert_generator:
+    build:
+      context: ./init-ssl
+    volumes:
+      - certs:/etc/certs
+    environment:
+      - CERT_DIR=${CERT_DIR}
+      - DAYS_VALID=${DAYS_VALID}
+      - CLIENT_NAMES=${CLIENT_NAMES}
+      - PFX_PASSWORD=${PFX_PASSWORD}
+    # Exécute la génération des certificats
+    command: sh -c "mkdir -p ${CERT_DIR} && /usr/local/bin/generate_certs.sh"
+
+  db:
+    # Utilise l'image officielle Percona Distribution for PostgreSQL 17
+    image: percona/percona-distribution-postgresql:17.6-1
+    container_name: percona_postgres_tde
+    
+    secrets:
+      - backup_pass_secret
+      - postgres_password_secret
+
+    environment:
+      - PGPORT=${PGPORT}
+      - POSTGRES_USER=${POSTGRES_USER}
+      # Indique à l'entrée PostgreSQL de lire le mot de passe depuis ce fichier secret
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password_secret
+      - POSTGRES_DB=${POSTGRES_DB}
+      - ENABLE_PG_TDE=1
+
+      # Chemin du trousseau de clés PG_TDE
+      - PG_TDE_KEYRING_FILE=/var/lib/postgresql/data/pg_tde_keyring
+
+      # Chemin du secret de chiffrement de sauvegarde
+      - BACKUP_PASS_FILE=/run/secrets/backup_pass_secret
+
+    depends_on:
+      cert_generator:
+        condition: service_completed_successfully
+    networks:
+      - traefik_proxy
+#    ports:
+#      - "${PGPORT}:${PGPORT}"
+    expose:
+      - "${PGPORT}"
+    volumes:
+      # Volumes de base
+      - postgres_data:/var/lib/postgresql/data
+      - certs:/etc/certs:ro
+      - ./backups:/backups # Volume pour les sauvegardes chiffrées
+
+      # Configuration
+      - ./postgres-config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres-config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+
+      # Scripts
+      - ./initdb/init_pg_tde.sh:/docker-entrypoint-initdb.d/init_pg_tde.sh:ro
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
+
+    command: >
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    labels:
+      - traefik.enable=true
+      - traefik.tcp.routers.postgres-tde.rule=HostSNI(`*`)
+      - traefik.tcp.routers.postgres-tde.entrypoints=postgres-tde
+      - traefik.tcp.routers.postgres-tde.service=postgres-tde-svc
+      - traefik.tcp.services.postgres-tde-svc.loadbalancer.server.port=5434
+      - traefik.tcp.routers.postgres-tde.middlewares=tcpSecureByIp@file
+      
+
+volumes:
+  postgres_data:
+  certs:
+
+secrets:
+  backup_pass_secret:
+    file: ./secrets/backup_encryption_pass.txt
+  postgres_password_secret:
+    file: ./secrets/postgres_password.txt

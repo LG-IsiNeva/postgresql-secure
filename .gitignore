@@ -1,0 +1,17 @@
+# Ignore environment variable files
+.env
+
+# Ignore all files in the secrets directory
+secrets/*
+!secrets/*.exemple
+
+backups/*
+!backups/.gitkeeper
+
+certs/*
+!certs/.gitkeeper
+
+
+
+
+
