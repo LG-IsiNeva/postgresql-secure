@@ -1,5 +1,7 @@
 # 📄 PostgreSQL 17 avec TDE et mTLS Sécurisé
 
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)![Percona](https://img.shields.io/badge/Percona-CC0000?style=flat-square&logo=mysql&logoColor=white)![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)![Security](https://img.shields.io/badge/Security-00D084?style=flat-square&logo=shield&logoColor=white)
+
 ## 🚀 Vue d'ensemble
 
 Instance **Percona Distribution for PostgreSQL 17** hautement sécurisée déployée avec Docker Compose.
