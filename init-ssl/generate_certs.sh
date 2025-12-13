@@ -9,6 +9,8 @@ CERT_DIR=${CERT_DIR:-/etc/certs}
 DAYS_VALID=${DAYS_VALID:-365}
 CLIENT_NAMES=${CLIENT_NAMES:-"admin,app_user,backup_user"}
 PFX_PASSWORD=${PFX_PASSWORD:-"changeme"}
+FQDN_IP=${FQDN_IP:-""}
+FQDN_URL=${FQDN_URL:-""}
 
 echo "=========================================="
 echo "  Génération des Certificats SSL/TLS"
@@ -16,6 +18,8 @@ echo "=========================================="
 echo "Répertoire: $CERT_DIR"
 echo "Validité: $DAYS_VALID jours"
 echo "Clients à générer: $CLIENT_NAMES"
+echo "FQDN IP: ${FQDN_IP:-'(non défini)'}"
+echo "FQDN URL: ${FQDN_URL:-'(non défini)'}"
 echo "=========================================="
 
 # Créer le répertoire si nécessaire
@@ -48,9 +52,26 @@ openssl req -new -nodes -text \
     -keyout $CERT_DIR/server.key \
     -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Database/CN=percona_postgres_tde"
 
+# Construction dynamique du SAN (Subject Alternative Name)
+SAN_LIST="DNS:percona_postgres_tde,DNS:localhost,DNS:db,IP:127.0.0.1"
+
+# Ajouter l'IP publique si définie
+if [ -n "$FQDN_IP" ]; then
+    SAN_LIST="${SAN_LIST},IP:${FQDN_IP}"
+    echo "  → Ajout de l'IP publique au SAN: $FQDN_IP"
+fi
+
+# Ajouter le FQDN si défini
+if [ -n "$FQDN_URL" ]; then
+    SAN_LIST="${SAN_LIST},DNS:${FQDN_URL}"
+    echo "  → Ajout du FQDN au SAN: $FQDN_URL"
+fi
+
+echo "  SAN complet: $SAN_LIST"
+
 # Signature du certificat serveur par la CA avec SANs
 openssl x509 -req -in $CERT_DIR/server.csr -text -days $DAYS_VALID \
-    -extfile <(printf "subjectAltName=DNS:percona_postgres_tde,DNS:localhost,DNS:db,IP:127.0.0.1") \
+    -extfile <(printf "subjectAltName=$SAN_LIST") \
     -CA $CERT_DIR/ca.crt \
     -CAkey $CERT_DIR/ca.key \
     -CAcreateserial \

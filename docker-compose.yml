@@ -12,6 +12,8 @@ services:
       - DAYS_VALID=${DAYS_VALID}
       - CLIENT_NAMES=${CLIENT_NAMES}
       - PFX_PASSWORD=${PFX_PASSWORD}
+      - FQDN_IP=${FQDN_IP}
+      - FQDN_URL=${FQDN_URL}
     # Exécute la génération des certificats
     command: sh -c "mkdir -p ${CERT_DIR} && /usr/local/bin/generate_certs.sh"
 
@@ -23,6 +25,10 @@ services:
     secrets:
       - backup_pass_secret
       - postgres_password_secret
+      - admin_password_secret
+      - app_user_password_secret
+      - backup_user_password_secret
+      - app_developer_password_secret
 
     environment:
       - PGPORT=${PGPORT}
@@ -32,15 +38,26 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - ENABLE_PG_TDE=1
 
-      # Chemin du trousseau de clés PG_TDE
-      - PG_TDE_KEYRING_FILE=/var/lib/postgresql/data/pg_tde_keyring
+      # Chemin du trousseau de clés PG_TDE (doit être dans PGDATA=/data/db)
+      - PG_TDE_KEYRING_FILE=/data/db/pg_tde_keys.per
 
       # Chemin du secret de chiffrement de sauvegarde
       - BACKUP_PASS_FILE=/run/secrets/backup_pass_secret
 
+      # Liste des utilisateurs à créer (voir .env.exemple pour le mapping des rôles)
+      - CLIENT_NAMES=${CLIENT_NAMES}
+
     depends_on:
       cert_generator:
         condition: service_completed_successfully
+    
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=$$(cat /run/secrets/postgres_password_secret) pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -p ${PGPORT}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
     networks:
       - traefik_proxy
 #    ports:
@@ -56,6 +73,7 @@ services:
       # Configuration
       - ./postgres-config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./postgres-config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres-config/pg_ident.conf:/etc/postgresql/pg_ident.conf:ro
 
       # Scripts
       - ./initdb/init_pg_tde.sh:/docker-entrypoint-initdb.d/init_pg_tde.sh:ro
@@ -65,6 +83,7 @@ services:
     command: >
       -c config_file=/etc/postgresql/postgresql.conf
       -c hba_file=/etc/postgresql/pg_hba.conf
+      -c ident_file=/etc/postgresql/pg_ident.conf
     labels:
       - traefik.enable=true
       - traefik.tcp.routers.postgres-tde.rule=HostSNI(`*`)
@@ -83,3 +102,11 @@ secrets:
     file: ./secrets/backup_encryption_pass.txt
   postgres_password_secret:
     file: ./secrets/postgres_password.txt
+  admin_password_secret:
+    file: ./secrets/admin_password.txt
+  app_user_password_secret:
+    file: ./secrets/app_user_password.txt
+  backup_user_password_secret:
+    file: ./secrets/backup_user_password.txt
+  app_developer_password_secret:
+    file: ./secrets/app_developer_password.txt

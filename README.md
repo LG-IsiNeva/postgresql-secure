@@ -50,36 +50,77 @@ POSTGRES_DB=secure_db
 
 # Certificats SSL/TLS
 CERT_DIR=/etc/certs
-DAYS_VALID=3650
+DAYS_VALID=365
+
+# FQDN/IP publique pour le certificat serveur (SAN)
+# Ces valeurs sont ajoutées au Subject Alternative Name du certificat serveur
+# Permet la connexion avec sslmode=verify-full depuis l'extérieur
+FQDN_IP=94.23.5.104                           # IP publique du serveur
+FQDN_URL=postgresql-secure.lgrdev.ovh         # Nom de domaine (DNS)
 
 # Utilisateurs à créer (séparés par des virgules)
 # IMPORTANT: Ces noms seront utilisés comme CN dans les certificats
 # et doivent correspondre aux noms d'utilisateurs PostgreSQL
-CLIENT_NAMES=admin,app_user,backup_user
+#
+# MAPPING DES RÔLES (position dans la liste):
+#   1er utilisateur = ADMIN      → ALL PRIVILEGES sur la base
+#   2ème utilisateur = APP_USER  → CRUD (SELECT, INSERT, UPDATE, DELETE)
+#   3ème utilisateur = BACKUP    → SELECT only (lecture seule)
+#   4ème utilisateur = DEVELOPER → CREATE, ALTER, DROP, CRUD (développement)
+#   5ème+ utilisateurs = BACKUP  → SELECT only (par défaut)
+CLIENT_NAMES=admin,app_user,backup_user,app_developer
 
 # Mot de passe pour les fichiers PFX/PKCS#12
 PFX_PASSWORD=<généré_automatiquement>
 ```
 
-**⚠️ IMPORTANT** : Les fichiers `secrets/postgres_password.txt` et `secrets/backup_encryption_pass.txt` contiennent des mots de passe sécurisés générés automatiquement. **Ne les commitez jamais dans Git !**
+**⚠️ IMPORTANT** : Les fichiers de secrets ne doivent jamais être commités dans Git :
+- `secrets/postgres_password.txt` - Mot de passe admin PostgreSQL
+- `secrets/backup_encryption_pass.txt` - Clé de chiffrement des sauvegardes
+- `secrets/<username>_password.txt` - Mot de passe de chaque utilisateur
 
-### 2. Création des Utilisateurs PostgreSQL
+### 2. Configuration des Mots de Passe Utilisateurs
 
-Avant de démarrer, vous devez créer les utilisateurs PostgreSQL correspondant aux noms dans `CLIENT_NAMES`. Créez le fichier `initdb/create_users.sql` :
+Les utilisateurs PostgreSQL sont créés **automatiquement** à partir de la variable `CLIENT_NAMES`. Pour chaque utilisateur, vous devez créer un fichier secret contenant son mot de passe.
 
-```sql
--- Créer les utilisateurs correspondant aux certificats clients
-CREATE USER admin WITH PASSWORD 'mot_de_passe_fort_1';
-CREATE USER app_user WITH PASSWORD 'mot_de_passe_fort_2';
-CREATE USER backup_user WITH PASSWORD 'mot_de_passe_fort_3';
-
--- Accorder les permissions appropriées
-GRANT ALL PRIVILEGES ON DATABASE secure_db TO admin;
-GRANT CONNECT ON DATABASE secure_db TO app_user;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
-GRANT CONNECT ON DATABASE secure_db TO backup_user;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO backup_user;
+**Structure des fichiers secrets :**
 ```
+secrets/
+├── postgres_password.txt          # Mot de passe admin PostgreSQL
+├── backup_encryption_pass.txt     # Clé de chiffrement des sauvegardes
+├── admin_password.txt             # Mot de passe du 1er utilisateur (ADMIN)
+├── app_user_password.txt          # Mot de passe du 2ème utilisateur (APP_USER)
+├── backup_user_password.txt       # Mot de passe du 3ème utilisateur (BACKUP)
+└── app_developer_password.txt     # Mot de passe du 4ème utilisateur (DEVELOPER)
+```
+
+**Génération de mots de passe sécurisés :**
+```bash
+# Générer un mot de passe fort pour chaque utilisateur
+openssl rand -base64 24 > secrets/admin_password.txt
+openssl rand -base64 24 > secrets/app_user_password.txt
+openssl rand -base64 24 > secrets/backup_user_password.txt
+openssl rand -base64 24 > secrets/app_developer_password.txt
+```
+
+**Mapping des rôles et permissions :**
+
+| Position | Rôle | Permissions |
+|----------|------|-------------|
+| 1er utilisateur | ADMIN | `ALL PRIVILEGES` sur la base et le schéma public |
+| 2ème utilisateur | APP_USER | `CONNECT`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| 3ème utilisateur | BACKUP | `CONNECT`, `SELECT` (lecture seule) |
+| 4ème utilisateur | DEVELOPER | `CREATE`, `USAGE` sur schéma + CRUD + `CREATE` sur DB |
+| 5ème+ utilisateurs | BACKUP | `CONNECT`, `SELECT` (par défaut) |
+
+**Personnalisation des noms :**
+
+Si vous modifiez `CLIENT_NAMES`, adaptez les noms des fichiers secrets :
+```env
+# Exemple avec noms personnalisés
+CLIENT_NAMES=superadmin,myapp,backup_readonly
+```
+→ Créer : `secrets/superadmin_password.txt`, `secrets/myapp_password.txt`, `secrets/backup_readonly_password.txt`
 
 ### 3. Démarrage des Services
 
@@ -99,11 +140,99 @@ Le service `cert_generator` s'exécute en premier et génère :
 
 -----
 
+## 🛠️ Ajouter un Poste Client Windows
+
+Vous pouvez avoir **plusieurs postes Windows** avec des certificats distincts qui utilisent le **même compte PostgreSQL** (ex: `app_user`). Chaque poste a son propre certificat, ce qui permet :
+- **Traçabilité** : identifier quel poste s'est connecté
+- **Révocation individuelle** : révoquer un certificat sans affecter les autres
+- **Sécurité** : pas de partage de clé privée entre postes
+
+### Utilisation du Script
+
+```bash
+# Ajouter un certificat pour un nouveau poste
+./scripts/add_client_cert.sh <nom_certificat> <utilisateur_postgresql> [mot_de_passe_pfx]
+
+# Exemples:
+./scripts/add_client_cert.sh app_pc_bureau app_user
+./scripts/add_client_cert.sh app_laptop_jean app_user "MonMotDePasse123"
+./scripts/add_client_cert.sh backup_nas backup_user
+```
+
+### Convention de Nommage
+
+| Préfixe | Utilisateur cible | Exemple |
+|---------|-------------------|---------|
+| `app_<nom>` | app_user | `app_pc_bureau`, `app_laptop_marie` |
+| `backup_<nom>` | backup_user | `backup_server1`, `backup_nas` |
+
+### Étapes Après Génération
+
+1. **Recharger la configuration PostgreSQL** :
+   ```bash
+   docker exec percona_postgres_tde sh -c 'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -c "SELECT pg_reload_conf();"'
+   ```
+
+2. **Transférer les fichiers vers le poste Windows** :
+   - `certs/ca.crt` (certificat de la CA)
+   - `certs/client_<nom>.pfx` (certificat + clé au format Windows)
+
+3. **Importer sur Windows** (PowerShell en admin) :
+   ```powershell
+   # Importer la CA dans les autorités de confiance
+   Import-Certificate -FilePath ca.crt -CertStoreLocation Cert:\LocalMachine\Root
+
+   # Importer le certificat client
+   $pwd = ConvertTo-SecureString -String 'MOT_DE_PASSE_PFX' -Force -AsPlainText
+   Import-PfxCertificate -FilePath client_app_pc_bureau.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+   ```
+
+4. **Configurer le client PostgreSQL** (psql, pgAdmin, DBeaver, etc.) avec l'utilisateur `app_user`
+
+### Mapping des Certificats (pg_ident.conf)
+
+Le fichier `postgres-config/pg_ident.conf` contient le mapping entre les CN des certificats et les utilisateurs PostgreSQL. Le script `add_client_cert.sh` ajoute automatiquement les entrées nécessaires.
+
+Exemple de contenu :
+```
+# Mapping direct (CN = utilisateur PostgreSQL)
+cert_map    admin               admin
+cert_map    app_user            app_user
+cert_map    backup_user         backup_user
+cert_map    app_developer       app_developer
+
+# Mapping multi-postes (plusieurs CN -> même utilisateur)
+cert_map    poste_laurent       app_developer
+cert_map    app_pc_bureau       app_user
+cert_map    app_laptop_jean     app_user
+cert_map    backup_nas          backup_user
+```
+
+-----
+
 ## 🔐 Gestion des Certificats et Clés
 
 ### A. Certificats Générés Automatiquement
 
-Le script génère automatiquement tous les certificats nécessaires au démarrage :
+Le script génère automatiquement tous les certificats nécessaires au démarrage.
+
+**Subject Alternative Name (SAN) du certificat serveur :**
+
+Le certificat serveur inclut automatiquement ces noms dans le SAN :
+- `DNS:percona_postgres_tde` (nom interne Docker)
+- `DNS:localhost`
+- `DNS:db`
+- `IP:127.0.0.1`
+- `IP:${FQDN_IP}` (si défini dans `.env`)
+- `DNS:${FQDN_URL}` (si défini dans `.env`)
+
+Pour vérifier le SAN du certificat serveur :
+```bash
+docker run --rm -v postgresql-secure_certs:/certs alpine/openssl x509 \
+    -in /certs/server.crt -noout -text | grep -A1 "Subject Alternative Name"
+```
+
+**Fichiers générés :**
 
 | Fichier | Description | Utilisation |
 |---------|-------------|-------------|
@@ -123,35 +252,74 @@ Le script génère automatiquement tous les certificats nécessaires au démarra
 
 ### B. Récupération des Certificats Clients
 
-Pour copier les certificats depuis le container vers l'hôte :
+Les certificats sont stockés dans un volume Docker nommé. Pour les copier vers le répertoire local :
 
 ```bash
-# Copier tous les certificats
-docker cp percona_postgres_tde:/etc/certs/. ./certs/
+# Copier tous les certificats du volume Docker vers le répertoire local
+docker run --rm -v postgresql-secure_certs:/certs -v $(pwd)/certs:/local \
+    alpine sh -c "cp /certs/* /local/"
 
-# Vérifier les certificats générés
+# Vérifier les certificats copiés
 ls -l certs/client_*.{crt,key,pfx}
 ```
 
-### C. Connexion avec psql (Linux/Mac)
+### C. Régénérer les Certificats
+
+Pour régénérer tous les certificats (par exemple après modification de `FQDN_IP` ou `FQDN_URL`) :
 
 ```bash
-# Connexion avec l'utilisateur 'admin'
+# 1. Reconstruire l'image du générateur et régénérer les certificats
+docker compose build cert_generator
+docker compose up cert_generator --force-recreate
+
+# 2. Redémarrer PostgreSQL pour charger le nouveau certificat serveur
+docker compose restart db
+
+# 3. Copier les nouveaux certificats en local
+docker run --rm -v postgresql-secure_certs:/certs -v $(pwd)/certs:/local \
+    alpine sh -c "cp /certs/* /local/"
+```
+
+⚠️ **Important** : Après régénération, tous les certificats clients existants doivent être redistribués aux postes concernés.
+
+### D. Connexion avec psql (Linux/Mac)
+
+**Connexion locale (depuis le serveur) :**
+```bash
 psql "host=localhost port=5434 dbname=secure_db user=admin \
       sslmode=verify-full \
       sslcert=certs/client_admin.crt \
       sslkey=certs/client_admin.key \
       sslrootcert=certs/ca.crt"
+```
 
-# Alternative avec variables d'environnement
+**Connexion distante (via FQDN ou IP publique) :**
+```bash
+# Via le FQDN (recommandé)
+psql "host=postgresql-secure.lgrdev.ovh port=5434 dbname=secure_db user=admin \
+      sslmode=verify-full \
+      sslcert=client_admin.crt \
+      sslkey=client_admin.key \
+      sslrootcert=ca.crt"
+
+# Via l'IP publique
+psql "host=94.23.5.104 port=5434 dbname=secure_db user=admin \
+      sslmode=verify-full \
+      sslcert=client_admin.crt \
+      sslkey=client_admin.key \
+      sslrootcert=ca.crt"
+```
+
+**Alternative avec variables d'environnement :**
+```bash
 export PGSSLMODE=verify-full
 export PGSSLCERT=certs/client_admin.crt
 export PGSSLKEY=certs/client_admin.key
 export PGSSLROOTCERT=certs/ca.crt
-psql -h localhost -p 5434 -U admin -d secure_db
+psql -h postgresql-secure.lgrdev.ovh -p 5434 -U admin -d secure_db
 ```
 
-### D. Installation des Certificats sur Windows
+### E. Installation des Certificats sur Windows
 
 Pour utiliser mTLS depuis Windows, vous devez installer les certificats dans les magasins Windows appropriés.
 
@@ -226,7 +394,7 @@ psql -h localhost -p 5434 -U admin -d secure_db
 **Avec pgAdmin 4**
 1. Créer un nouveau serveur
 2. Onglet "Connexion" :
-   - Nom d'hôte : `localhost`
+   - Nom d'hôte : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
    - Port : `5434`
    - Base de données : `secure_db`
    - Nom d'utilisateur : `admin`
@@ -239,7 +407,7 @@ psql -h localhost -p 5434 -U admin -d secure_db
 **Avec DBeaver**
 1. Créer une nouvelle connexion PostgreSQL
 2. Onglet "Main" :
-   - Host : `localhost`
+   - Host : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
    - Port : `5434`
    - Database : `secure_db`
    - Username : `admin`
@@ -271,7 +439,100 @@ openssl pkcs12 -in certs\client_admin.pfx -nokeys -out certs\client_admin_dbeave
 openssl pkcs12 -in certs\client_admin.pfx -nocerts -nodes -out certs\client_admin_dbeaver.key
 ```
 
-### E. Configuration pour Applications .NET/C#
+**Avec WinDev / WebDev (Connecteur Natif PostgreSQL)**
+
+WinDev/WebDev supporte les connexions SSL/mTLS via le Connecteur Natif PostgreSQL. Les certificats sont spécifiés dans les informations étendues de la connexion.
+
+**Méthode 1 : Avec HDécritConnexion (Recommandé)**
+
+```wlang
+// Définition des chemins des certificats
+sCheminCerts est une chaîne = "C:\Certificats\"
+
+// Informations étendues pour mTLS
+sInfosEtendues est une chaîne = [
+Server Port=5434;
+SSL Mode=verify-full;
+SSL CA=%1ca.crt;
+SSL Cert=%1client_admin.crt;
+SSL Key=%1client_admin.key
+]
+
+// Remplacer le chemin
+sInfosEtendues = ChaîneConstruit(sInfosEtendues, sCheminCerts)
+
+// Décrire la connexion
+HDécritConnexion("MaConnexionPostgreSQL", ...
+    "admin", ...                           // Utilisateur
+    "", ...                                // Mot de passe (vide pour auth par certificat)
+    "postgresql-secure.lgrdev.ovh", ...   // Serveur (FQDN ou IP publique)
+    "secure_db", ...                       // Base de données
+    hAccèsNatifPostgreSQL, ...             // Connecteur Natif PostgreSQL
+    hOLectureEcriture, ...                 // Mode d'accès
+    sInfosEtendues)                        // Informations étendues SSL
+
+// Ouvrir la connexion
+SI HOuvreConnexion("MaConnexionPostgreSQL") = Faux ALORS
+    Erreur("Échec de connexion : " + HErreurInfo())
+    RETOUR
+FIN
+
+Info("Connexion mTLS établie avec succès !")
+```
+
+**Méthode 2 : Avec HOuvreConnexion directement**
+
+```wlang
+// Chaîne d'informations étendues complète
+sInfosEtendues est une chaîne = [
+Server Port=5434;
+SSL Mode=verify-full;
+SSL CA=C:\Certificats\ca.crt;
+SSL Cert=C:\Certificats\client_admin.crt;
+SSL Key=C:\Certificats\client_admin.key
+]
+
+// Ouverture directe de la connexion
+SI HOuvreConnexion("MaConnexion", "admin", "", "postgresql-secure.lgrdev.ovh", ...
+    "secure_db", hAccèsNatifPostgreSQL, hOLectureEcriture, sInfosEtendues) ALORS
+    Info("Connexion établie !")
+SINON
+    Erreur(HErreurInfo())
+FIN
+```
+
+**Méthode 3 : Via l'éditeur d'analyses (mode graphique)**
+
+1. Ouvrir l'analyse dans WinDev
+2. Créer une nouvelle connexion : Clic droit → Nouvelle connexion
+3. Type : **PostgreSQL (Accès Natif)**
+4. Serveur : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
+5. Base de données : `secure_db`
+6. Utilisateur : `admin`
+7. Dans **Informations étendues**, saisir :
+   ```
+   Server Port=5434;SSL Mode=verify-full;SSL CA=C:\Certificats\ca.crt;SSL Cert=C:\Certificats\client_admin.crt;SSL Key=C:\Certificats\client_admin.key
+   ```
+
+**Modes SSL disponibles** (paramètre `SSL Mode`) :
+
+| Mode | Description |
+|------|-------------|
+| `disable` | Pas de SSL |
+| `allow` | Essaie sans SSL, puis avec SSL si échec |
+| `prefer` | Essaie avec SSL, puis sans SSL si échec (défaut) |
+| `require` | SSL obligatoire, mais ne vérifie pas le certificat serveur |
+| `verify-ca` | SSL obligatoire + vérifie que le certificat serveur est signé par la CA |
+| `verify-full` | SSL obligatoire + vérifie le certificat serveur ET le nom d'hôte (**recommandé**) |
+
+**Prérequis WinDev** :
+- Connecteur Natif PostgreSQL installé
+- Couche client PostgreSQL (libpq) compilée avec support SSL
+- Certificats accessibles en lecture par l'application
+
+**Documentation officielle** : [Connecteur Natif PostgreSQL - Certificats SSL](https://doc.pcsoft.fr/fr-FR/?5518002)
+
+### F. Configuration pour Applications .NET/C#
 
 #### Option 1 : Utilisation du certificat .pfx (Recommandé)
 
@@ -289,7 +550,7 @@ var clientCert = new X509Certificate2(
 // Configuration de la connexion avec mTLS
 var connString = new NpgsqlConnectionStringBuilder
 {
-    Host = "localhost",
+    Host = "postgresql-secure.lgrdev.ovh",  // Ou "94.23.5.104" ou "localhost"
     Port = 5434,
     Database = "secure_db",
     Username = "admin",
@@ -344,7 +605,7 @@ X509Certificate2 GetClientCertFromStore(string userName)
 var clientCert = GetClientCertFromStore("admin");
 var connString = new NpgsqlConnectionStringBuilder
 {
-    Host = "localhost",
+    Host = "postgresql-secure.lgrdev.ovh",  // Ou "94.23.5.104" ou "localhost"
     Port = 5434,
     Database = "secure_db",
     Username = "admin",
@@ -364,10 +625,10 @@ using var conn = await dataSource.OpenConnectionAsync();
 
 ```csharp
 var connectionString =
-    "Host=localhost;" +
+    "Host=postgresql-secure.lgrdev.ovh;" +  // Ou "94.23.5.104" ou "localhost"
     "Port=5434;" +
     "Database=secure_db;" +
-    "Username=admin;" +
+    "Username=admin;" + +
     "SSL Mode=VerifyFull;" +
     "Root Certificate=C:\\path\\to\\certs\\ca.crt;" +
     "Client Certificate=C:\\path\\to\\certs\\client_admin.crt;" +
@@ -401,7 +662,7 @@ catch (NpgsqlException ex) when (ex.Message.Contains("SSL"))
 }
 ```
 
-### F. Configuration IIS pour Applications Web ASP.NET
+### G. Configuration IIS pour Applications Web ASP.NET
 
 #### Prérequis
 - Windows Server 2016+ ou Windows 10+
@@ -488,7 +749,7 @@ Grant-CertPermission -CertSubject "app_user" -AppPoolIdentity $AppPoolName
 ```json
 {
   "ConnectionStrings": {
-    "PostgreSQL": "Host=localhost;Port=5434;Database=secure_db;Username=app_user;SSL Mode=VerifyFull;Trust Server Certificate=false"
+    "PostgreSQL": "Host=postgresql-secure.lgrdev.ovh;Port=5434;Database=secure_db;Username=app_user;SSL Mode=VerifyFull;Trust Server Certificate=false"
   },
   "PostgreSQL": {
     "CertificateSettings": {
@@ -630,28 +891,65 @@ NpgsqlLoggingConfiguration.InitializeLogging(builder.Services.BuildServiceProvid
 
 ## 💾 Opérations de Sauvegarde et Restauration
 
-Les scripts de sauvegarde chiffrent les dumps avec AES-256-CBC pour la sécurité au repos.
+Les scripts de sauvegarde utilisent `pg_dump` et chiffrent les dumps avec AES-256-CBC via OpenSSL.
 
 ### 1. Sauvegarde Chiffrée
 
 ```bash
 # Exécuter une sauvegarde chiffrée
-docker exec -it percona_postgres_tde /usr/local/bin/backup.sh
+docker exec percona_postgres_tde bash /usr/local/bin/backup.sh
 
 # Les fichiers sont créés dans ./backups/ sur l'hôte
 # Format: secure_db_YYYYMMDD_HHMMSS.dump.enc
 ```
 
+**Caractéristiques de la sauvegarde :**
+- Utilise l'utilisateur `backup_user` (lecture seule)
+- Connexion via socket Unix (pas de certificat requis)
+- Chiffrement AES-256-CBC avec PBKDF2
+- Mot de passe de chiffrement depuis Docker Secret
+
 ### 2. Restauration Chiffrée
+
+La restauration crée une base de données temporaire pour valider les données avant de remplacer l'originale.
 
 ```bash
 # Lister les sauvegardes disponibles
 ls -lh backups/
 
 # Restaurer une sauvegarde spécifique
-docker exec -it percona_postgres_tde \
-  /usr/local/bin/restore.sh /backups/secure_db_20231215_103045.dump.enc
+docker exec percona_postgres_tde \
+  bash /usr/local/bin/restore.sh /backups/secure_db_YYYYMMDD_HHMMSS.dump.enc
 ```
+
+**Processus de restauration :**
+1. Crée une base temporaire `secure_db_restore_temp`
+2. Configure pg_tde avec le Global Key Provider
+3. Déchiffre et restaure les données
+4. Affiche les commandes pour finaliser (si validation OK)
+
+```bash
+# Vérifier les données restaurées
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) \
+   psql -U postgres -d secure_db_restore_temp -p 5434 -c "\\dt"'
+
+# Finaliser la restauration (remplacer l'originale)
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) \
+   psql -U postgres -p 5434 -c "
+     DROP DATABASE secure_db;
+     ALTER DATABASE secure_db_restore_temp RENAME TO secure_db;"'
+```
+
+### 3. Configuration TDE pour les Restaurations
+
+Le système utilise un **Global Key Provider** qui permet de restaurer des tables TDE dans de nouvelles bases :
+
+| Provider | Portée | Utilisation |
+|----------|--------|-------------|
+| `local-file` | Base de données | Clé `master-key` pour les opérations courantes |
+| `global-file` | Instance PostgreSQL | Clé `global-master-key` pour les restaurations |
 
 **Note** : Le mot de passe de chiffrement est stocké dans `secrets/backup_encryption_pass.txt`
 
@@ -663,16 +961,16 @@ docker exec -it percona_postgres_tde \
 
 ```bash
 # Vérifier que SSL est activé
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SHOW ssl;"
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -p 5434 -c "SHOW ssl;"'
 
 # Vérifier la version TLS minimum
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SHOW ssl_min_protocol_version;"
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -p 5434 -c "SHOW ssl_min_protocol_version;"'
 
 # Vérifier les chiffrements autorisés
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SHOW ssl_ciphers;"
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -p 5434 -c "SHOW ssl_ciphers;"'
 ```
 
 ### Tester la Connexion mTLS
@@ -697,12 +995,16 @@ psql "host=localhost port=5434 dbname=secure_db user=admin \
 
 ```bash
 # Vérifier que pg_tde est chargé
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SHOW shared_preload_libraries;"
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -p 5434 -c "SHOW shared_preload_libraries;"'
 
-# Vérifier la configuration du keyring
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SHOW pg_tde.keyring_file;"
+# Vérifier la version de pg_tde
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -d secure_db -p 5434 -c "SELECT pg_tde_version();"'
+
+# Vérifier les clés configurées
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -d secure_db -p 5434 -c "SELECT * FROM pg_tde_key_info();"'
 ```
 
 ---
@@ -734,11 +1036,11 @@ docker-compose restart db
 ```bash
 # Surveiller les tentatives de connexion échouées
 docker exec percona_postgres_tde \
-  grep "FATAL" /var/lib/postgresql/data/log/postgresql-*.log
+  grep "FATAL" /data/db/log/postgresql-*.log 2>/dev/null || echo "Aucun log d'erreur trouvé"
 
 # Surveiller les connexions SSL
-docker exec percona_postgres_tde \
-  psql -U postgres -c "SELECT datname, usename, ssl, client_addr FROM pg_stat_ssl JOIN pg_stat_activity ON pg_stat_ssl.pid = pg_stat_activity.pid;"
+docker exec percona_postgres_tde bash -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password_secret) psql -U postgres -p 5434 -c "SELECT datname, usename, ssl, client_addr FROM pg_stat_ssl JOIN pg_stat_activity ON pg_stat_ssl.pid = pg_stat_activity.pid;"'
 ```
 
 ### 4. Firewall et Réseau
@@ -789,7 +1091,7 @@ middlewares:
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │ Couche Chiffrement (pg_tde)                          │  │
 │  │ - Chiffrement transparent au repos                   │  │
-│  │ - Keyring sécurisé (/data/db/pg_tde_keyring)         │  │
+│  │ - Keyring sécurisé (/data/db/pg_tde_keys.per)        │  │
 │  └──────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │ Stockage                                             │  │
@@ -798,6 +1100,41 @@ middlewares:
 │  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🛠️ Outils de Vérification
+
+Des scripts de vérification sont disponibles dans le répertoire `tools/`. Ces scripts doivent être exécutés **depuis l'hôte** (pas depuis le conteneur).
+
+### Vérifier pg_tde (Chiffrement TDE)
+
+```bash
+# Depuis le répertoire du projet
+cd /home/ubuntu/system/postgresql-secure
+./tools/check_pg_tde.sh
+```
+
+Ce script vérifie :
+- Extension pg_tde installée et version
+- Fournisseur de clés configuré (local-file et global-file)
+- Clé de chiffrement active (master-key et global-master-key)
+- Test fonctionnel (création table chiffrée, vérification)
+
+### Vérifier les Utilisateurs et Permissions
+
+```bash
+# Depuis le répertoire du projet
+cd /home/ubuntu/system/postgresql-secure
+./tools/check_users.sh
+```
+
+Ce script vérifie :
+- Liste des utilisateurs PostgreSQL (admin, app_user, backup_user, app_developer)
+- Droits sur la base de données
+- Privilèges par défaut configurés
+- Mapping des certificats (pg_ident.conf)
+- Test de connexion pour chaque utilisateur
 
 ---
 
