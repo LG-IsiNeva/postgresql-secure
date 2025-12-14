@@ -57,8 +57,8 @@ DAYS_VALID=365
 # FQDN/IP publique pour le certificat serveur (SAN)
 # Ces valeurs sont ajoutées au Subject Alternative Name du certificat serveur
 # Permet la connexion avec sslmode=verify-full depuis l'extérieur
-FQDN_IP=94.23.5.104                           # IP publique du serveur
-FQDN_URL=postgresql-secure.lgrdev.ovh         # Nom de domaine (DNS)
+FQDN_IP=<IP du serveur>              # IP publique du serveur
+FQDN_URL=myserver.domain.tld         # Nom de domaine (DNS)
 
 # Utilisateurs à créer (séparés par des virgules)
 # IMPORTANT: Ces noms seront utilisés comme CN dans les certificats
@@ -298,14 +298,14 @@ psql "host=localhost port=5434 dbname=secure_db user=admin \
 **Connexion distante (via FQDN ou IP publique) :**
 ```bash
 # Via le FQDN (recommandé)
-psql "host=postgresql-secure.lgrdev.ovh port=5434 dbname=secure_db user=admin \
+psql "host=<myserver.domain.tld> port=5434 dbname=secure_db user=admin \
       sslmode=verify-full \
       sslcert=client_admin.crt \
       sslkey=client_admin.key \
       sslrootcert=ca.crt"
 
 # Via l'IP publique
-psql "host=94.23.5.104 port=5434 dbname=secure_db user=admin \
+psql "host=<ip server> port=5434 dbname=secure_db user=admin \
       sslmode=verify-full \
       sslcert=client_admin.crt \
       sslkey=client_admin.key \
@@ -318,7 +318,7 @@ export PGSSLMODE=verify-full
 export PGSSLCERT=certs/client_admin.crt
 export PGSSLKEY=certs/client_admin.key
 export PGSSLROOTCERT=certs/ca.crt
-psql -h postgresql-secure.lgrdev.ovh -p 5434 -U admin -d secure_db
+psql -h <myserver.domain.tld> -p 5434 -U admin -d secure_db
 ```
 
 ### E. Installation des Certificats sur Windows
@@ -396,7 +396,7 @@ psql -h localhost -p 5434 -U admin -d secure_db
 **Avec pgAdmin 4**
 1. Créer un nouveau serveur
 2. Onglet "Connexion" :
-   - Nom d'hôte : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
+   - Nom d'hôte : `<myserver.domain.tld>` (ou `<ip server>`)
    - Port : `5434`
    - Base de données : `secure_db`
    - Nom d'utilisateur : `admin`
@@ -409,7 +409,7 @@ psql -h localhost -p 5434 -U admin -d secure_db
 **Avec DBeaver**
 1. Créer une nouvelle connexion PostgreSQL
 2. Onglet "Main" :
-   - Host : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
+   - Host : `<myserver.domain.tld>` (ou `<ip server>`)
    - Port : `5434`
    - Database : `secure_db`
    - Username : `admin`
@@ -467,7 +467,7 @@ sInfosEtendues = ChaîneConstruit(sInfosEtendues, sCheminCerts)
 HDécritConnexion("MaConnexionPostgreSQL", ...
     "admin", ...                           // Utilisateur
     "", ...                                // Mot de passe (vide pour auth par certificat)
-    "postgresql-secure.lgrdev.ovh", ...   // Serveur (FQDN ou IP publique)
+    "<myserver.domain.tld>", ...   // Serveur (FQDN ou IP publique)
     "secure_db", ...                       // Base de données
     hAccèsNatifPostgreSQL, ...             // Connecteur Natif PostgreSQL
     hOLectureEcriture, ...                 // Mode d'accès
@@ -495,7 +495,7 @@ SSL Key=C:\Certificats\client_admin.key
 ]
 
 // Ouverture directe de la connexion
-SI HOuvreConnexion("MaConnexion", "admin", "", "postgresql-secure.lgrdev.ovh", ...
+SI HOuvreConnexion("MaConnexion", "admin", "", "<myserver.domain.tld>", ...
     "secure_db", hAccèsNatifPostgreSQL, hOLectureEcriture, sInfosEtendues) ALORS
     Info("Connexion établie !")
 SINON
@@ -508,7 +508,7 @@ FIN
 1. Ouvrir l'analyse dans WinDev
 2. Créer une nouvelle connexion : Clic droit → Nouvelle connexion
 3. Type : **PostgreSQL (Accès Natif)**
-4. Serveur : `postgresql-secure.lgrdev.ovh` (ou `94.23.5.104`)
+4. Serveur : `<myserver.domain.tld>` (ou `<ip server>`)
 5. Base de données : `secure_db`
 6. Utilisateur : `admin`
 7. Dans **Informations étendues**, saisir :
@@ -552,7 +552,7 @@ var clientCert = new X509Certificate2(
 // Configuration de la connexion avec mTLS
 var connString = new NpgsqlConnectionStringBuilder
 {
-    Host = "postgresql-secure.lgrdev.ovh",  // Ou "94.23.5.104" ou "localhost"
+    Host = "<myserver.domain.tld>",  // Ou "<ip server>" ou "localhost"
     Port = 5434,
     Database = "secure_db",
     Username = "admin",
@@ -607,7 +607,7 @@ X509Certificate2 GetClientCertFromStore(string userName)
 var clientCert = GetClientCertFromStore("admin");
 var connString = new NpgsqlConnectionStringBuilder
 {
-    Host = "postgresql-secure.lgrdev.ovh",  // Ou "94.23.5.104" ou "localhost"
+    Host = "<myserver.domain.tld>",  // Ou "<ip server>" ou "localhost"
     Port = 5434,
     Database = "secure_db",
     Username = "admin",
@@ -627,7 +627,7 @@ using var conn = await dataSource.OpenConnectionAsync();
 
 ```csharp
 var connectionString =
-    "Host=postgresql-secure.lgrdev.ovh;" +  // Ou "94.23.5.104" ou "localhost"
+    "Host=<myserver.domain.tld>;" +  // Ou "<ip server>" ou "localhost"
     "Port=5434;" +
     "Database=secure_db;" +
     "Username=admin;" + +
@@ -751,7 +751,7 @@ Grant-CertPermission -CertSubject "app_user" -AppPoolIdentity $AppPoolName
 ```json
 {
   "ConnectionStrings": {
-    "PostgreSQL": "Host=postgresql-secure.lgrdev.ovh;Port=5434;Database=secure_db;Username=app_user;SSL Mode=VerifyFull;Trust Server Certificate=false"
+    "PostgreSQL": "Host=<myserver.domain.tld>;Port=5434;Database=secure_db;Username=app_user;SSL Mode=VerifyFull;Trust Server Certificate=false"
   },
   "PostgreSQL": {
     "CertificateSettings": {
