@@ -29,63 +29,75 @@ mkdir -p $CERT_DIR
 # 1. GÉNÉRATION DE LA CA (Certificate Authority)
 ################################################################################
 echo ""
-echo "[1/3] Génération de la CA (Certificate Authority)..."
-openssl req -new -x509 -days $DAYS_VALID -nodes -text \
-    -out $CERT_DIR/ca.crt \
-    -keyout $CERT_DIR/ca.key \
-    -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Security/CN=PostgreSQL-TDE-CA"
+if [ -f "$CERT_DIR/ca.crt" ] && [ -f "$CERT_DIR/ca.key" ]; then
+    echo "[1/3] CA existante trouvée, génération ignorée"
+    echo "  → CA: $CERT_DIR/ca.crt"
+    echo "  → Clé: $CERT_DIR/ca.key"
+else
+    echo "[1/3] Génération de la CA (Certificate Authority)..."
+    openssl req -new -x509 -days $DAYS_VALID -nodes -text \
+        -out $CERT_DIR/ca.crt \
+        -keyout $CERT_DIR/ca.key \
+        -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Security/CN=PostgreSQL-TDE-CA"
 
-chown 26:26 $CERT_DIR/ca.key $CERT_DIR/ca.crt 2>/dev/null || true
-chmod 600 $CERT_DIR/ca.key
-chmod 644 $CERT_DIR/ca.crt
-echo "✓ CA générée: $CERT_DIR/ca.crt"
+    chown 26:26 $CERT_DIR/ca.key $CERT_DIR/ca.crt 2>/dev/null || true
+    chmod 600 $CERT_DIR/ca.key
+    chmod 644 $CERT_DIR/ca.crt
+    echo "✓ CA générée: $CERT_DIR/ca.crt"
+fi
 
 ################################################################################
 # 2. GÉNÉRATION DU CERTIFICAT SERVEUR
 ################################################################################
 echo ""
-echo "[2/3] Génération du certificat Serveur..."
+if [ -f "$CERT_DIR/server.crt" ] && [ -f "$CERT_DIR/server.key" ]; then
+    echo "[2/3] Certificat serveur existant trouvé, génération ignorée"
+    echo "  → Certificat: $CERT_DIR/server.crt"
+    echo "  → Clé: $CERT_DIR/server.key"
+else
+    echo "[2/3] Génération du certificat Serveur..."
 
-# Création de la clé privée serveur
-openssl req -new -nodes -text \
-    -out $CERT_DIR/server.csr \
-    -keyout $CERT_DIR/server.key \
-    -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Database/CN=percona_postgres_tde"
+    # Création de la clé privée serveur
+    openssl req -new -nodes -text \
+        -out $CERT_DIR/server.csr \
+        -keyout $CERT_DIR/server.key \
+        -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Database/CN=percona_postgres_tde"
 
-# Construction dynamique du SAN (Subject Alternative Name)
-SAN_LIST="DNS:percona_postgres_tde,DNS:localhost,DNS:db,IP:127.0.0.1"
+    # Construction dynamique du SAN (Subject Alternative Name)
+    SAN_LIST="DNS:percona_postgres_tde,DNS:localhost,DNS:db,IP:127.0.0.1"
 
-# Ajouter l'IP publique si définie
-if [ -n "$FQDN_IP" ]; then
-    SAN_LIST="${SAN_LIST},IP:${FQDN_IP}"
-    echo "  → Ajout de l'IP publique au SAN: $FQDN_IP"
+    # Ajouter l'IP publique si définie
+    if [ -n "$FQDN_IP" ]; then
+        SAN_LIST="${SAN_LIST},IP:${FQDN_IP}"
+        echo "  → Ajout de l'IP publique au SAN: $FQDN_IP"
+    fi
+
+    # Ajouter le FQDN si défini
+    if [ -n "$FQDN_URL" ]; then
+        SAN_LIST="${SAN_LIST},DNS:${FQDN_URL}"
+        echo "  → Ajout du FQDN au SAN: $FQDN_URL"
+    fi
+
+    echo "  SAN complet: $SAN_LIST"
+
+    # Signature du certificat serveur par la CA avec SANs
+    openssl x509 -req -in $CERT_DIR/server.csr -text -days $DAYS_VALID \
+        -extfile <(printf "subjectAltName=$SAN_LIST") \
+        -CA $CERT_DIR/ca.crt \
+        -CAkey $CERT_DIR/ca.key \
+        -CAcreateserial \
+        -out $CERT_DIR/server.crt
+
+    # Nettoyage
+    rm $CERT_DIR/server.csr
+
+    # Permissions PostgreSQL requises
+    # PostgreSQL est strict : server.key doit être 0600 et appartenir à postgres (UID 26 dans Percona)
+    chown 26:26 $CERT_DIR/server.key $CERT_DIR/server.crt 2>/dev/null || true
+    chmod 600 $CERT_DIR/server.key
+    chmod 644 $CERT_DIR/server.crt
+    echo "✓ Certificat serveur généré: $CERT_DIR/server.crt"
 fi
-
-# Ajouter le FQDN si défini
-if [ -n "$FQDN_URL" ]; then
-    SAN_LIST="${SAN_LIST},DNS:${FQDN_URL}"
-    echo "  → Ajout du FQDN au SAN: $FQDN_URL"
-fi
-
-echo "  SAN complet: $SAN_LIST"
-
-# Signature du certificat serveur par la CA avec SANs
-openssl x509 -req -in $CERT_DIR/server.csr -text -days $DAYS_VALID \
-    -extfile <(printf "subjectAltName=$SAN_LIST") \
-    -CA $CERT_DIR/ca.crt \
-    -CAkey $CERT_DIR/ca.key \
-    -CAcreateserial \
-    -out $CERT_DIR/server.crt
-
-# Nettoyage
-rm $CERT_DIR/server.csr
-
-# Permissions PostgreSQL requises
-# PostgreSQL est strict : server.key doit être 0600 et appartenir à postgres (UID 26 dans Percona)
-chown 26:26 $CERT_DIR/server.key $CERT_DIR/server.crt 2>/dev/null || true
-chmod 600 $CERT_DIR/server.key
-chmod 644 $CERT_DIR/server.crt
-echo "✓ Certificat serveur généré: $CERT_DIR/server.crt"
 
 ################################################################################
 # 3. GÉNÉRATION DES CERTIFICATS CLIENTS (mTLS)
@@ -100,47 +112,56 @@ for CLIENT_NAME in $CLIENT_LIST; do
     # Supprimer les espaces blancs
     CLIENT_NAME=$(echo "$CLIENT_NAME" | xargs)
 
-    echo ""
-    echo "→ Génération du certificat pour: $CLIENT_NAME"
-
     CLIENT_PREFIX="$CERT_DIR/client_${CLIENT_NAME}"
 
-    # a. Création de la clé privée client
-    openssl req -new -nodes -text \
-        -out "$CLIENT_PREFIX.csr" \
-        -keyout "$CLIENT_PREFIX.key" \
-        -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Clients/CN=$CLIENT_NAME"
+    # Vérifier si le certificat client existe déjà
+    if [ -f "$CLIENT_PREFIX.crt" ] && [ -f "$CLIENT_PREFIX.key" ] && [ -f "$CLIENT_PREFIX.pfx" ]; then
+        echo ""
+        echo "→ Certificat client existant pour: $CLIENT_NAME (génération ignorée)"
+        echo "  → Certificat: $CLIENT_PREFIX.crt"
+        echo "  → Clé: $CLIENT_PREFIX.key"
+        echo "  → PKCS#12: $CLIENT_PREFIX.pfx"
+    else
+        echo ""
+        echo "→ Génération du certificat pour: $CLIENT_NAME"
 
-    # IMPORTANT: Le CN=$CLIENT_NAME doit correspondre au nom d'utilisateur PostgreSQL
-    # pour que l'authentification par certificat fonctionne avec pg_hba.conf
+        # a. Création de la clé privée client
+        openssl req -new -nodes -text \
+            -out "$CLIENT_PREFIX.csr" \
+            -keyout "$CLIENT_PREFIX.key" \
+            -subj "/C=FR/ST=IDF/L=Paris/O=PostgreSQL-TDE/OU=Clients/CN=$CLIENT_NAME"
 
-    # b. Signature du certificat client par la CA
-    openssl x509 -req -in "$CLIENT_PREFIX.csr" -text -days $DAYS_VALID \
-        -CA $CERT_DIR/ca.crt \
-        -CAkey $CERT_DIR/ca.key \
-        -CAcreateserial \
-        -out "$CLIENT_PREFIX.crt"
+        # IMPORTANT: Le CN=$CLIENT_NAME doit correspondre au nom d'utilisateur PostgreSQL
+        # pour que l'authentification par certificat fonctionne avec pg_hba.conf
 
-    # c. Suppression du CSR
-    rm "$CLIENT_PREFIX.csr"
+        # b. Signature du certificat client par la CA
+        openssl x509 -req -in "$CLIENT_PREFIX.csr" -text -days $DAYS_VALID \
+            -CA $CERT_DIR/ca.crt \
+            -CAkey $CERT_DIR/ca.key \
+            -CAcreateserial \
+            -out "$CLIENT_PREFIX.crt"
 
-    # d. Génération du fichier PKCS#12 (.pfx) pour Windows/autres clients
-    openssl pkcs12 -export -out "$CLIENT_PREFIX.pfx" \
-        -inkey "$CLIENT_PREFIX.key" \
-        -in "$CLIENT_PREFIX.crt" \
-        -certfile $CERT_DIR/ca.crt \
-        -passout pass:${PFX_PASSWORD} \
-        -name "PostgreSQL Client - $CLIENT_NAME"
+        # c. Suppression du CSR
+        rm "$CLIENT_PREFIX.csr"
 
-    # e. Permissions sécurisées
-    chmod 600 "$CLIENT_PREFIX.key"
-    chmod 644 "$CLIENT_PREFIX.crt"
-    chmod 600 "$CLIENT_PREFIX.pfx"
+        # d. Génération du fichier PKCS#12 (.pfx) pour Windows/autres clients
+        openssl pkcs12 -export -out "$CLIENT_PREFIX.pfx" \
+            -inkey "$CLIENT_PREFIX.key" \
+            -in "$CLIENT_PREFIX.crt" \
+            -certfile $CERT_DIR/ca.crt \
+            -passout pass:${PFX_PASSWORD} \
+            -name "PostgreSQL Client - $CLIENT_NAME"
 
-    echo "  ✓ Fichiers générés:"
-    echo "    - Certificat: $CLIENT_PREFIX.crt"
-    echo "    - Clé privée: $CLIENT_PREFIX.key"
-    echo "    - PKCS#12:    $CLIENT_PREFIX.pfx (mot de passe protégé)"
+        # e. Permissions sécurisées
+        chmod 600 "$CLIENT_PREFIX.key"
+        chmod 644 "$CLIENT_PREFIX.crt"
+        chmod 600 "$CLIENT_PREFIX.pfx"
+
+        echo "  ✓ Fichiers générés:"
+        echo "    - Certificat: $CLIENT_PREFIX.crt"
+        echo "    - Clé privée: $CLIENT_PREFIX.key"
+        echo "    - PKCS#12:    $CLIENT_PREFIX.pfx (mot de passe protégé)"
+    fi
 done
 
 ################################################################################

@@ -6,7 +6,7 @@ services:
     build:
       context: ./init-ssl
     volumes:
-      - certs:/etc/certs
+      - ./certs:/etc/certs
     environment:
       - CERT_DIR=${CERT_DIR}
       - DAYS_VALID=${DAYS_VALID}
@@ -16,6 +16,8 @@ services:
       - FQDN_URL=${FQDN_URL}
     # Exécute la génération des certificats
     command: sh -c "mkdir -p ${CERT_DIR} && /usr/local/bin/generate_certs.sh"
+    # Ne pas redémarrer le service après la génération initiale
+    restart: "no"
 
   db:
     # Utilise l'image officielle Percona Distribution for PostgreSQL 17
@@ -67,7 +69,7 @@ services:
     volumes:
       # Volumes de base
       - postgres_data:/var/lib/postgresql/data
-      - certs:/etc/certs:ro
+      - ./certs:/etc/certs:ro
       - ./backups:/backups # Volume pour les sauvegardes chiffrées
 
       # Configuration
@@ -95,7 +97,6 @@ services:
 
 volumes:
   postgres_data:
-  certs:
 
 secrets:
   backup_pass_secret:
